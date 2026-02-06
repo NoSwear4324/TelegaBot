@@ -1,0 +1,4 @@
+TG_TOKEN=???   telegram token
+DC_TOKEN=???	discord token
+DISCORD_GUILD_ID=???	discord server
+DISCORD_CHANNEL_ID=???	discord channel where bot will type
