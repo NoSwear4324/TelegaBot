@@ -1,0 +1,27 @@
+# вся папка
+node_modules/
+_modules/
+dist/
+build/
+buildign          ← это, наверное, опечатка? → должно быть build/ ?
+
+.venv/
+venv/
+venv.env          ← если это файл, то лучше *.env или venv/
+
+# .env все файлы с расширением
+*.log
+*.tmp
+*.DS_Store        ← правильно .DS_Store (без *)
+
+# всё кроме .gitignore
+.*
+!.gitignore
+
+key.env
+*.env
+.env*
+env/
+state.json
+__pycache__/
+*.pyc
