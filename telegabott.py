@@ -10,7 +10,8 @@ from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardButton,
+    FSInputFile
 )
 from aiogram.filters import CommandStart
 
@@ -21,8 +22,9 @@ load_dotenv("key.env")
 
 TG_TOKEN = os.getenv("TG_TOKEN")
 DC_TOKEN = os.getenv("DC_TOKEN")
-GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-DEFAULT_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
+# Добавим проверку на существование переменных
+GUILD_ID = int(os.getenv("DISCORD_GUILD_ID") or 0)
+DEFAULT_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID") or 0)
 
 # ───────── PATHS ─────────
 TMP_DIR = "tmp"
@@ -30,7 +32,6 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 # ───────── STATE ─────────
 STATE_FILE = "state.json"
-
 state = {
     "enabled": True,
     "tg_chat_id": None,
@@ -40,9 +41,18 @@ state = {
 
 if os.path.exists(STATE_FILE):
     with open(STATE_FILE, "r", encoding="utf-8") as f:
-        state.update(json.load(f))
+        try:
+            state.update(json.load(f))
+        except json.JSONDecodeError:
+            pass
 
 def save_state():
+    # Ограничиваем размер reply_map, чтобы файл не весил мегабайты
+    if len(state["reply_map"]) > 400: # 200 пар ID
+        keys = list(state["reply_map"].keys())
+        for k in keys[:200]:
+            state["reply_map"].pop(k, None)
+            
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
@@ -74,29 +84,32 @@ async def start(msg: Message):
     save_state()
     await msg.answer("🧠 Панель управления мостом", reply_markup=main_kb())
 
+# Исправленные обработчики кнопок
 @router.callback_query(F.data == "on")
 async def on_cb(call: CallbackQuery):
     state["enabled"] = True
     save_state()
-    await call.answer("🟢 Включено")
+    await call.message.edit_text("🟢 Мост включен", reply_markup=main_kb())
+    await call.answer() # Убирает "часики"
 
 @router.callback_query(F.data == "off")
 async def off_cb(call: CallbackQuery):
     state["enabled"] = False
     save_state()
-    await call.answer("🔴 Выключено")
+    await call.message.edit_text("🔴 Мост выключен", reply_markup=main_kb())
+    await call.answer()
 
 @router.callback_query(F.data == "status")
 async def status_cb(call: CallbackQuery):
+    status_text = "🟢 Онлайн" if state["enabled"] else "🔴 Выключен"
     await call.answer(
-        f"{'🟢 Онлайн' if state['enabled'] else '🔴 Выкл'}\n"
-        f"DC канал: {state['discord_channel_id']}",
+        f"{status_text}\nКанал: {state['discord_channel_id']}",
         show_alert=True
     )
 
 @router.callback_query(F.data == "set_channel")
 async def set_ch(call: CallbackQuery):
-    await call.message.answer("✏️ Отправь ID Discord-канала")
+    await call.message.answer("✏️ Отправь ID Discord-канала (17-20 цифр)")
     await call.answer()
 
 @router.message(F.text.regexp(r"^\d{17,20}$"))
@@ -105,57 +118,48 @@ async def set_channel_id(msg: Message):
         return
     state["discord_channel_id"] = int(msg.text)
     save_state()
-    await msg.answer("✅ Канал обновлён")
+    await msg.answer(f"✅ Канал обновлён: {msg.text}")
 
-# ───────── TG → DC (TEXT / PHOTO / FILE) ─────────
-media_groups = defaultdict(list)
-
+# ───────── TG → DC ─────────
 @router.message(F.photo | F.document | F.text)
 async def tg_to_dc(msg: Message):
-    if not state["enabled"] or msg.chat.id != state["tg_chat_id"]:
+    if not state["enabled"] or msg.chat.id != state["tg_chat_id"] or (msg.text and msg.text.startswith("/")):
         return
 
     guild = dc.get_guild(GUILD_ID)
+    if not guild: return
     channel = guild.get_channel(state["discord_channel_id"])
+    if not channel: return
 
-    reply_to = None
-    if msg.reply_to_message:
-        reply_to = state["reply_map"].get(str(msg.reply_to_message.message_id))
-
+    reply_to = state["reply_map"].get(str(msg.reply_to_message.message_id)) if msg.reply_to_message else None
     files = []
 
-    # ── PHOTO ──
     if msg.photo:
-        file = await bot.get_file(msg.photo[-1].file_id)
-        path = f"{TMP_DIR}/{file.file_id}.jpg"
-        await bot.download_file(file.file_path, path)
+        file_info = await bot.get_file(msg.photo[-1].file_id)
+        path = f"{TMP_DIR}/{file_info.file_id}.jpg"
+        await bot.download_file(file_info.file_path, path)
         files.append(discord.File(path))
 
-    # ── DOCUMENT ──
     if msg.document:
-        file = await bot.get_file(msg.document.file_id)
+        file_info = await bot.get_file(msg.document.file_id)
         path = f"{TMP_DIR}/{msg.document.file_name}"
-        await bot.download_file(file.file_path, path)
+        await bot.download_file(file_info.file_path, path)
         files.append(discord.File(path))
 
-    content = msg.text or ""
-
+    content = msg.text or msg.caption or ""
+    
     sent = await channel.send(
-        content=f"[Telegram | {msg.from_user.username or msg.from_user.id}]\n{content}",
+        content=f"**[TG | {msg.from_user.username or msg.from_user.id}]**\n{content}",
         files=files if files else None,
         reference=discord.MessageReference(
             message_id=int(reply_to),
-            channel_id=channel.id,
-            guild_id=guild.id
+            channel_id=channel.id
         ) if reply_to else None
     )
 
     state["reply_map"][str(msg.message_id)] = str(sent.id)
     state["reply_map"][str(sent.id)] = str(msg.message_id)
     save_state()
-
-    shutil.rmtree(TMP_DIR, ignore_errors=True)
-    os.makedirs(TMP_DIR, exist_ok=True)
 
 # ───────── DISCORD ─────────
 intents = discord.Intents.default()
@@ -164,56 +168,50 @@ dc = discord.Client(intents=intents)
 
 @dc.event
 async def on_ready():
-    print("🟢 Discord READY")
+    print(f"🟢 Discord READY: {dc.user}")
 
 @dc.event
 async def on_message(message: discord.Message):
-    if (
-        message.author.bot
-        or not state["enabled"]
-        or message.channel.id != state["discord_channel_id"]
-        or not state["tg_chat_id"]
-    ):
+    if message.author.bot or not state["enabled"] or message.channel.id != state["discord_channel_id"] or not state["tg_chat_id"]:
         return
 
-    reply_to = None
-    if message.reference and message.reference.resolved:
-        reply_to = state["reply_map"].get(str(message.reference.resolved.id))
-
-    # ── FILES FROM DISCORD ──
-    files = []
-    for att in message.attachments:
+    reply_to = state["reply_map"].get(str(message.reference.message_id)) if message.reference else None
+    
+    header = f"<b>[DC | {message.author.name}]:</b>"
+    
+    if message.attachments:
+        att = message.attachments[0]
         path = f"{TMP_DIR}/{att.filename}"
         await att.save(path)
-        files.append(path)
-
-    if files:
+        
         sent = await bot.send_document(
             chat_id=state["tg_chat_id"],
-            document=open(files[0], "rb"),
-            caption=f"[Discord | {message.author.name}]\n{message.content}",
-            reply_to_message_id=int(reply_to) if reply_to else None
+            document=FSInputFile(path),
+            caption=f"{header}\n{message.content}",
+            reply_to_message_id=int(reply_to) if reply_to else None,
+            parse_mode="HTML"
         )
     else:
         sent = await bot.send_message(
             chat_id=state["tg_chat_id"],
-            text=f"[Discord | {message.author.name}]\n{message.content}",
-            reply_to_message_id=int(reply_to) if reply_to else None
+            text=f"{header}\n{message.content}",
+            reply_to_message_id=int(reply_to) if reply_to else None,
+            parse_mode="HTML"
         )
 
     state["reply_map"][str(message.id)] = str(sent.message_id)
     state["reply_map"][str(sent.message_id)] = str(message.id)
     save_state()
 
-    shutil.rmtree(TMP_DIR, ignore_errors=True)
-    os.makedirs(TMP_DIR, exist_ok=True)
-
 # ───────── MAIN ─────────
 async def main():
-    await asyncio.gather(
-        dp.start_polling(bot),
-        dc.start(DC_TOKEN)
-    )
+    # Чистим tmp только при запуске
+    shutil.rmtree(TMP_DIR, ignore_errors=True)
+    os.makedirs(TMP_DIR, exist_ok=True)
+    
+    # Запуск без gather для стабильности в Pydroid
+    asyncio.create_task(dc.start(DC_TOKEN))
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
