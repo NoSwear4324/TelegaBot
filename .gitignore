@@ -26,3 +26,4 @@ state.json
 __pycache__/
 *.pyc
 tmp/
+all_users.json

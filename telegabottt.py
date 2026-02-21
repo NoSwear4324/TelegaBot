@@ -24,6 +24,17 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 # ───────── STATE ─────────
 STATE_FILE = "state.json"
+ALL_USERS_FILE = "all_users.json"
+
+# Загружаем всех пользователей
+all_users = []
+if os.path.exists(ALL_USERS_FILE):
+    try:
+        with open(ALL_USERS_FILE, "r", encoding="utf-8") as f:
+            all_users = json.load(f)
+    except:
+        pass
+
 state = {
     "enabled": True,
     "dnd": False,
@@ -40,6 +51,17 @@ def save_state():
             state["reply_map"].pop(k, None)
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+
+def save_all_users():
+    """Сохранить всех пользователей"""
+    with open(ALL_USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_users, f, indent=2, ensure_ascii=False)
+
+def add_user_to_all(chat_id):
+    """Добавить пользователя в список всех пользователей"""
+    if chat_id not in all_users:
+        all_users.append(chat_id)
+        save_all_users()
 
 def load_state():
     """Загрузить состояние из файла"""
@@ -100,8 +122,8 @@ def remove_allowed_user(chat_id):
         save_state()
 
 async def send_to_all_users(text, **kwargs):
-    """Отправить сообщение всем админам и пользователям"""
-    all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+    """Отправить сообщение всем пользователям"""
+    all_chats = list(set(all_users))  # Используем всех пользователей
     sent_messages = []
     for chat_id in all_chats:
         if chat_id:
@@ -135,6 +157,9 @@ def main_kb():
 
 @router.message(CommandStart())
 async def start(msg: Message):
+    # Добавляем пользователя в список всех пользователей
+    add_user_to_all(msg.chat.id)
+    
     # Первый пользователь становится админом
     if not state.get("admins"):
         add_admin(msg.chat.id)
@@ -147,7 +172,7 @@ async def start(msg: Message):
         state["discord_channel_id"] = DEFAULT_CHANNEL_ID
         state["reply_map"] = {}
         save_state()
-        await msg.answer(f"🚀 Мост TG ↔ DC запущен\nВы АДМИН\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(state.get('allowed_users', []))}", reply_markup=main_kb())
+        await msg.answer(f"🚀 Мост TG ↔ DC запущен\nВы АДМИН\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(all_users)}", reply_markup=main_kb())
     else:
         # Все остальные пользователи имеют доступ
         await msg.answer("🚀 Мост TG ↔ DC работает\nДоступ разрешён", reply_markup=main_kb())
@@ -179,7 +204,7 @@ async def toggle(call: CallbackQuery):
 async def status_check(call: CallbackQuery):
     status = "🟢 Онлайн" if state["enabled"] else "🔴 Оффлайн"
     await call.answer(
-        f"{status}\nDND: {state.get('dnd')}\nКанал: {state['discord_channel_id']}\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(state.get('allowed_users', []))}",
+        f"{status}\nDND: {state.get('dnd')}\nКанал: {state['discord_channel_id']}\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(all_users)}",
         show_alert=True
     )
 
@@ -193,13 +218,13 @@ async def users_menu(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Только для админа", show_alert=True)
         return
-    
+
     admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
-    users_list = "\n".join([f"• {u}" for u in state.get("allowed_users", []) if u not in state.get("admins", [])])
-    
+    users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
+
     await call.message.answer(
         f"👥 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-        f"👤 Пользователи ({len(state.get('allowed_users', [])) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
+        f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
         f"➕ Добавить админа: +ID (например +123456)\n"
         f"➖ Удалить админа: -ID (например -123456)\n"
         f"➕ Добавить пользователя: ID\n"
@@ -218,11 +243,11 @@ async def users_refresh(call: CallbackQuery):
     # Закрываем старое меню и открываем новое
     await call.message.delete()
     admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
-    users_list = "\n".join([f"• {u}" for u in state.get("allowed_users", []) if u not in state.get("admins", [])])
-    
+    users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
+
     await call.message.answer(
         f"👥 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-        f"👤 Пользователи ({len(state.get('allowed_users', [])) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
+        f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
         f"➕ Добавить админа: +ID (например +123456)\n"
         f"➖ Удалить админа: -ID (например -123456)\n"
         f"➕ Добавить пользователя: ID\n"
@@ -292,6 +317,9 @@ async def get_webhook(channel):
 # ───────── TG → DC: новое сообщение ─────────
 @router.message()
 async def tg_to_dc(msg: Message):
+    # Добавляем пользователя в список всех (если это новый пользователь)
+    add_user_to_all(msg.chat.id)
+    
     # Проверяем доступ
     if not is_allowed(msg.chat.id):
         return
@@ -317,7 +345,7 @@ async def tg_to_dc(msg: Message):
         content_with_header = tg_header
 
     # Отправляем сообщение всем пользователям Telegram (кроме отправителя)
-    all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+    all_chats = list(set(all_users))
     sent_tg_messages = {}  # chat_id -> message_id
     for chat_id in all_chats:
         if chat_id == msg.chat.id:
@@ -737,7 +765,7 @@ async def on_message(message: discord.Message):
 
                 caption = f"{header}\n{content}" if att == message.attachments[0] and content else f"{header}\n{att.filename}"
                 # Отправляем всем пользователям
-                all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+                all_chats = list(set(all_users))
                 for chat_id in all_chats:
                     try:
                         sent = await bot.send_document(
@@ -771,7 +799,7 @@ async def on_message(message: discord.Message):
                                     caption = f"{header}\n{content}"
 
                                 # Отправляем всем
-                                all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+                                all_chats = list(set(all_users))
                                 for chat_id in all_chats:
                                     try:
                                         sent = await bot.send_document(
@@ -792,7 +820,7 @@ async def on_message(message: discord.Message):
 
                 # Для Lottie или если не удалось скачать — отправляем ссылку
                 sticker_type = "Lottie" if sticker.format == discord.StickerFormatType.lottie else "Стикер"
-                all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+                all_chats = list(set(all_users))
                 for chat_id in all_chats:
                     try:
                         sent = await bot.send_message(
@@ -867,7 +895,7 @@ async def on_message_edit(before, after):
         new_content = after.clean_content.strip() or "…"
 
         # Редактируем у всех пользователей
-        all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+        all_chats = list(set(all_users))
         for chat_id in all_chats:
             try:
                 await bot.edit_message_text(
@@ -898,7 +926,7 @@ async def on_message_delete(message):
 
     try:
         # Удаляем у всех пользователей
-        all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+        all_chats = list(set(all_users))
         for chat_id in all_chats:
             try:
                 await bot.delete_message(
@@ -955,7 +983,7 @@ async def on_raw_poll_vote_add(payload):
         author_name = message.author.display_name if hasattr(message, 'author') and message.author else "Unknown"
 
         # Редактируем у всех пользователей
-        all_chats = list(set(state["admins"] + state.get("allowed_users", [])))
+        all_chats = list(set(all_users))
         for chat_id in all_chats:
             try:
                 await bot.edit_message_text(
