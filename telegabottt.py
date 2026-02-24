@@ -142,6 +142,9 @@ def load_state():
                 state["admins"] = [str(a) for a in state.get("admins", [])]
                 # Нормализуем allowed_users к строкам
                 state["allowed_users"] = [str(u) for u in state.get("allowed_users", [])]
+                # Нормализуем dc_to_tg_target
+                if "dc_to_tg_target" not in state:
+                    state["dc_to_tg_target"] = "all"
                 # Миграция: если есть admin_chat_id, переносим в admins
                 if "admin_chat_id" in loaded and loaded["admin_chat_id"]:
                     admin_id = str(loaded["admin_chat_id"])
@@ -223,25 +226,25 @@ def get_target_chats():
     all_chats = list(all_users.keys())
     dc_target = state.get("dc_to_tg_target", "all")
     result = []
-    
+
     for chat_id_str in all_chats:
         if not chat_id_str:
             continue
-        
+
         # Определяем тип чата
         user_data = all_users.get(chat_id_str, {})
         chat_type = user_data.get("chat_type", "private")
         is_group = chat_type in ["group", "supergroup"]
-        
+
         # Фильтруем по настройке dc_to_tg_target
         if dc_target == "bot" and is_group:
             continue  # Пропускаем группы, отправляем только в ЛС
         elif dc_target == "group" and not is_group:
             continue  # Пропускаем ЛС, отправляем только в группы
         # если "all" - отправляем везде
-        
+
         result.append(chat_id_str)
-    
+
     return result
 
 # ───────── TELEGRAM ─────────
@@ -1376,7 +1379,7 @@ async def on_message_edit(before, after):
         header = f"<b>[DC | {after.author.display_name}]</b> ✏️"
         new_content = after.clean_content.strip() or "…"
 
-        # Редактируем у всех пользователей
+        # Редактиру��м у всех пользователей
         all_chats = get_target_chats()
         for chat_id_str in all_chats:
             try:
