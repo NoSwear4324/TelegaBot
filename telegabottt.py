@@ -581,8 +581,9 @@ async def tg_to_dc(msg: Message):
         content_with_header = tg_header
 
     # Отправляем сообщение всем пользователям Telegram (кроме отправителя)
-    all_chats = list(set(all_users))
-    print(f"📤 TG→TG: {len(all_chats)} чатов, отправитель: {msg.chat.id}, чаты: {all_chats}")
+    all_chats = list(set(all_users.keys()))
+    sender_chat_id = msg.chat.id
+    print(f"TG->TG: {len(all_chats)} чатов, отправитель: {sender_chat_id}, чаты: {all_chats}")
     sent_tg_messages = {}  # chat_id -> message_id
     first_tg_msg_id = None  # ID первого отправленного сообщения для ответов
 
@@ -602,9 +603,10 @@ async def tg_to_dc(msg: Message):
             # Это сообщение из TG — используем как есть
             reply_to_msg_id = orig_msg_id
 
-    for chat_id in all_chats:
-        if chat_id == msg.chat.id:
-            print(f"  ⏭️ Пропускаем отправителя {chat_id}")
+    for chat_id_str in all_chats:
+        chat_id = int(chat_id_str)  # Преобразуем в int
+        if chat_id == sender_chat_id:
+            print(f"  Пропускаем отправителя {chat_id}")
             continue  # Не отправляем самому себе
         try:
             if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
@@ -618,11 +620,11 @@ async def tg_to_dc(msg: Message):
                 sent_tg_messages[chat_id] = sent.message_id
                 if first_tg_msg_id is None:
                     first_tg_msg_id = sent.message_id
-                print(f"  ✅ Отправлено в {chat_id}: {sent.message_id}")
+                print(f"  Отправлено в {chat_id}: {sent.message_id}")
             else:
-                print(f"  📎 Медиа, отправка позже в {chat_id}")
+                print(f"  Медиа, отправка позже в {chat_id}")
         except Exception as e:
-            print(f"  ⚠️ Не удалось отправить в TG {chat_id}: {e}")
+            print(f"  Не удалось отправить в TG {chat_id}: {e}")
 
     # Если это только текст — отправляем в Discord
     if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
