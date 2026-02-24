@@ -26,12 +26,17 @@ os.makedirs(TMP_DIR, exist_ok=True)
 STATE_FILE = "state.json"
 ALL_USERS_FILE = "all_users.json"
 
-# Загружаем всех пользователей
-all_users = []
+# Загружаем всех пользователей (теперь как dict: {chat_id: username})
+all_users = {}  # {chat_id: {"username": "name", "first_name": "name"}}
 if os.path.exists(ALL_USERS_FILE):
     try:
         with open(ALL_USERS_FILE, "r", encoding="utf-8") as f:
-            all_users = json.load(f)
+            loaded = json.load(f)
+            # Конвертируем старый формат (список) в новый (dict)
+            if isinstance(loaded, list):
+                all_users = {uid: {"username": "User", "first_name": "User"} for uid in loaded}
+            else:
+                all_users = loaded
     except:
         pass
 
@@ -57,11 +62,49 @@ def save_all_users():
     with open(ALL_USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(all_users, f, indent=2, ensure_ascii=False)
 
-def add_user_to_all(chat_id):
-    """Добавить пользователя в список всех пользователей"""
+def add_user_to_all(msg):
+    """Добавить пользователя в список всех пользователей с именем"""
+    global all_users
+    chat_id = msg.chat.id
     if chat_id not in all_users:
-        all_users.append(chat_id)
+        all_users[chat_id] = {
+            "username": msg.from_user.username or msg.from_user.full_name or "User",
+            "first_name": msg.from_user.first_name or "User",
+            "last_name": msg.from_user.last_name or ""
+        }
         save_all_users()
+
+def add_user_by_id(chat_id):
+    """Добавить пользователя по ID (без имени, пока он не напишет боту)"""
+    global all_users
+    if chat_id not in all_users:
+        all_users[chat_id] = {
+            "username": f"User{chat_id}",
+            "first_name": f"User{chat_id}",
+            "last_name": ""
+        }
+        save_all_users()
+
+def update_user_info(msg):
+    """Обновить информацию о пользователе (если он уже есть в базе)"""
+    global all_users
+    chat_id = msg.chat.id
+    if chat_id in all_users:
+        # Обновляем имя если пользователь изменил username или имя
+        new_username = msg.from_user.username or msg.from_user.full_name or "User"
+        new_first_name = msg.from_user.first_name or "User"
+        if all_users[chat_id].get("username") != new_username or all_users[chat_id].get("first_name") != new_first_name:
+            all_users[chat_id]["username"] = new_username
+            all_users[chat_id]["first_name"] = new_first_name
+            all_users[chat_id]["last_name"] = msg.from_user.last_name or ""
+            save_all_users()
+
+def get_user_display_name(chat_id):
+    """Получить отображаемое имя пользователя"""
+    if chat_id in all_users:
+        user = all_users[chat_id]
+        return user.get("username") or user.get("first_name") or f"User{chat_id}"
+    return f"User{chat_id}"
 
 def load_state():
     """Загрузить состояние из файла"""
@@ -99,24 +142,28 @@ def is_allowed(chat_id):
 
 def add_admin(chat_id):
     """Добавить админа"""
+    global state
     if chat_id not in state["admins"]:
         state["admins"].append(chat_id)
         save_state()
 
 def remove_admin(chat_id):
     """Удалить админа"""
+    global state
     if chat_id in state["admins"]:
         state["admins"].remove(chat_id)
         save_state()
 
 def add_allowed_user(chat_id):
     """Добавить пользователя в список (для статистики)"""
+    global state
     if chat_id not in state["allowed_users"]:
         state["allowed_users"].append(chat_id)
         save_state()
 
 def remove_allowed_user(chat_id):
     """Удалить пользователя из списка (для статистики)"""
+    global state
     if chat_id in state["allowed_users"]:
         state["allowed_users"].remove(chat_id)
         save_state()
@@ -159,7 +206,9 @@ def main_kb():
 @router.message(CommandStart())
 async def start(msg: Message):
     # Добавляем пользователя в список всех пользователей
-    add_user_to_all(msg.chat.id)
+    add_user_to_all(msg)
+    # Или обновляем информацию если пользователь уже есть
+    update_user_info(msg)
 
     # Первый пользователь становится админом
     if not state.get("admins"):
@@ -331,29 +380,51 @@ def back_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back")]
     ])
 
+def escape_markdown(text):
+    """Экранирование специальных символов Markdown"""
+    if text:
+        # Экранируем символы которые имеют значение в Markdown
+        for char in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+            text = text.replace(char, '\\' + char)
+    return text
+
 @router.callback_query(F.data == "users")
 async def users_menu(call: CallbackQuery):
     if not is_admin(call.from_user.id):
-        await call.answer("⛔ Только для админа", show_alert=True)
+        await call.answer("Только для админа", show_alert=True)
         return
 
-    admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
-    users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
+    # Список админов с именами
+    admins_list = []
+    for uid in state.get("admins", []):
+        name = get_user_display_name(uid)
+        admins_list.append(f"👑 {uid} — {name}")
+    
+    # Список пользователей с именами (кроме админов)
+    admin_ids = state.get("admins", [])
+    users_items = []
+    for uid in all_users.keys():
+        uid_int = int(uid)
+        if uid_int not in admin_ids:
+            name = get_user_display_name(uid)
+            users_items.append(f"• {uid} — {name}")
+    
+    users_count = len(all_users) - len(admin_ids)
 
     try:
         await call.message.edit_text(
-            f"👥 **Управление пользователями**\n\n"
-            f"👑 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-            f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
-            f"➕ Добавить админа: `+ID` (например +123456)\n"
-            f"➖ Удалить админа: `-ID` (например -123456)\n"
-            f"➕ Добавить пользователя: `ID`\n"
-            f"➖ Удалить пользователя: `-ID`",
-            reply_markup=users_kb(),
-            parse_mode="Markdown"
+            f"👥 Управление пользователями\n\n"
+            f"👑 Админы ({len(admin_ids)}):\n" + "\n".join(admins_list) + "\n\n"
+            f"👤 Пользователи ({users_count}):\n" + ("\n".join(users_items) if users_items else "—") + "\n\n"
+            f"➕ Добавить админа: +ID\n"
+            f"➖ Удалить админа: -ID\n"
+            f"➕ Добавить пользователя: ID\n"
+            f"➖ Удалить пользователя: -ID",
+            reply_markup=users_kb()
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        await call.answer("Ошибка", show_alert=True)
     await call.answer()
 
 @router.callback_query(F.data == "users_refresh")
@@ -361,24 +432,53 @@ async def users_refresh(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer()
         return
+
+    # Принудительно обновляем информацию об админах
+    for admin_id in state.get("admins", []):
+        admin_id_str = str(admin_id)
+        if admin_id_str in all_users:
+            try:
+                user = await bot.get_chat(admin_id)
+                new_username = user.username or user.full_name or "User"
+                new_first_name = user.first_name or "User"
+                if all_users[admin_id_str].get("username") != new_username:
+                    all_users[admin_id_str]["username"] = new_username
+                    all_users[admin_id_str]["first_name"] = new_first_name
+                    all_users[admin_id_str]["last_name"] = user.last_name or ""
+                    save_all_users()
+            except Exception as e:
+                pass
+
+    # Список админов с именами
+    admins_list = []
+    for uid in state.get("admins", []):
+        name = get_user_display_name(uid)
+        admins_list.append(f"👑 {uid} — {name}")
     
-    admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
-    users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
+    # Список пользователей с именами (кроме админов)
+    admin_ids = state.get("admins", [])
+    users_items = []
+    for uid in all_users.keys():
+        uid_int = int(uid)
+        if uid_int not in admin_ids:
+            name = get_user_display_name(uid)
+            users_items.append(f"• {uid} — {name}")
+    
+    users_count = len(all_users) - len(admin_ids)
 
     try:
         await call.message.edit_text(
-            f"👥 **Управление пользователями**\n\n"
-            f"👑 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-            f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
-            f"➕ Добавить админа: `+ID` (например +123456)\n"
-            f"➖ Удалить админа: `-ID` (например -123456)\n"
-            f"➕ Добавить пользователя: `ID`\n"
-            f"➖ Удалить пользователя: `-ID`",
-            reply_markup=users_kb(),
-            parse_mode="Markdown"
+            f"👥 Управление пользователями\n\n"
+            f"👑 Админы ({len(admin_ids)}):\n" + "\n".join(admins_list) + "\n\n"
+            f"👤 Пользователи ({users_count}):\n" + ("\n".join(users_items) if users_items else "—") + "\n\n"
+            f"➕ Добавить админа: +ID\n"
+            f"➖ Удалить админа: -ID\n"
+            f"➕ Добавить пользователя: ID\n"
+            f"➖ Удалить пользователя: -ID",
+            reply_markup=users_kb()
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка: {e}")
     await call.answer()
 
 @router.callback_query(F.data == "back")
@@ -420,7 +520,8 @@ async def add_admin_cmd(msg: Message):
     user_id = int(msg.text.replace("+", ""))
     add_admin(user_id)
     add_allowed_user(user_id)
-    await msg.answer(f"✅ Админ {user_id} добавлен")
+    add_user_by_id(user_id)  # Добавляем в all_users с временным именем
+    await msg.answer(f"✅ Админ `{user_id}` добавлен", parse_mode="Markdown")
 
 @router.message(F.text.regexp(r"^\d{8,15}$"))
 async def add_user(msg: Message):
@@ -432,7 +533,8 @@ async def add_user(msg: Message):
         return
     user_id = int(text)
     add_allowed_user(user_id)
-    await msg.answer(f"✅ Пользователь {user_id} добавлен")
+    add_user_by_id(user_id)  # Добавляем в all_users с временным именем
+    await msg.answer(f"✅ Пользователь `{user_id}` добавлен", parse_mode="Markdown")
 
 # ───────── WEBHOOK ─────────
 async def get_webhook(channel):
@@ -450,8 +552,10 @@ async def get_webhook(channel):
 @router.message()
 async def tg_to_dc(msg: Message):
     # Добавляем пользователя в список всех (если это новый пользователь)
-    add_user_to_all(msg.chat.id)
-    
+    add_user_to_all(msg)
+    # Обновляем информацию о пользователе (если изменилось имя)
+    update_user_info(msg)
+
     # Проверяем доступ
     if not is_allowed(msg.chat.id):
         return
@@ -478,6 +582,7 @@ async def tg_to_dc(msg: Message):
 
     # Отправляем сообщение всем пользователям Telegram (кроме отправителя)
     all_chats = list(set(all_users))
+    print(f"📤 TG→TG: {len(all_chats)} чатов, отправитель: {msg.chat.id}, чаты: {all_chats}")
     sent_tg_messages = {}  # chat_id -> message_id
     first_tg_msg_id = None  # ID первого отправленного сообщения для ответов
 
@@ -499,6 +604,7 @@ async def tg_to_dc(msg: Message):
 
     for chat_id in all_chats:
         if chat_id == msg.chat.id:
+            print(f"  ⏭️ Пропускаем отправителя {chat_id}")
             continue  # Не отправляем самому себе
         try:
             if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
@@ -512,8 +618,11 @@ async def tg_to_dc(msg: Message):
                 sent_tg_messages[chat_id] = sent.message_id
                 if first_tg_msg_id is None:
                     first_tg_msg_id = sent.message_id
+                print(f"  ✅ Отправлено в {chat_id}: {sent.message_id}")
+            else:
+                print(f"  📎 Медиа, отправка позже в {chat_id}")
         except Exception as e:
-            print(f"⚠️ Не удалось отправить в TG {chat_id}: {e}")
+            print(f"  ⚠️ Не удалось отправить в TG {chat_id}: {e}")
 
     # Если это только текст — отправляем в Discord
     if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
