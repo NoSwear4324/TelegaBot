@@ -31,20 +31,24 @@ all_users = {}  # {chat_id: {"username": "name", "first_name": "name"}}
 if os.path.exists(ALL_USERS_FILE):
     try:
         with open(ALL_USERS_FILE, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            # Конвертируем старый формат (список) в новый (dict)
-            if isinstance(loaded, list):
-                all_users = {uid: {"username": "User", "first_name": "User"} for uid in loaded}
-            else:
-                all_users = loaded
-    except:
-        pass
+            content = f.read()
+            if content.strip():
+                loaded = json.loads(content)
+                # Конвертируем старый формат (список) в новый (dict)
+                if isinstance(loaded, list):
+                    all_users = {str(uid): {"username": "User", "first_name": "User"} for uid in loaded}
+                else:
+                    # Нормализуем ключи - все к строкам
+                    all_users = {str(k): v for k, v in loaded.items()}
+    except Exception as e:
+        print(f"Error loading all_users: {e}")
 
 state = {
     "enabled": True,
     "dnd": False,
-    "admins": [],  # Список админов
-    "allowed_users": [],  # Список разрешённых пользователей
+    "dc_to_tg_target": "all",  # Куда отправлять из Discord: "bot" (в ЛС бота), "group" (в группу), "all" (везде)
+    "admins": [],  # Список админов (как строки)
+    "allowed_users": [],  # Список разрешённых пользователей (как строки)
     "discord_channel_id": DEFAULT_CHANNEL_ID,
     "reply_map": {}
 }
@@ -59,28 +63,41 @@ def save_state():
 
 def save_all_users():
     """Сохранить всех пользователей"""
+    # Нормализуем ключи перед сохранением
+    normalized = {str(k): v for k, v in all_users.items()}
     with open(ALL_USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(all_users, f, indent=2, ensure_ascii=False)
+        json.dump(normalized, f, indent=2, ensure_ascii=False)
 
 def add_user_to_all(msg):
     """Добавить пользователя в список всех пользователей с именем"""
     global all_users
-    chat_id = msg.chat.id
+    chat_id = str(msg.chat.id)  # Всегда используем строки
     if chat_id not in all_users:
+        # Для групп используем название группы, для ЛС - имя пользователя
+        if msg.chat.type in ["group", "supergroup"]:
+            display_name = msg.chat.title or f"Chat{chat_id}"
+            username = msg.from_user.username if msg.from_user else None
+        else:
+            display_name = msg.from_user.username or msg.from_user.full_name or "User"
+            username = msg.from_user.username if msg.from_user else None
+
         all_users[chat_id] = {
-            "username": msg.from_user.username or msg.from_user.full_name or "User",
-            "first_name": msg.from_user.first_name or "User",
-            "last_name": msg.from_user.last_name or ""
+            "username": username or display_name,
+            "first_name": display_name,
+            "last_name": "",
+            "chat_type": msg.chat.type,
+            "chat_title": msg.chat.title if hasattr(msg.chat, 'title') else None
         }
         save_all_users()
 
 def add_user_by_id(chat_id):
     """Добавить пользователя по ID (без имени, пока он не напишет боту)"""
     global all_users
-    if chat_id not in all_users:
-        all_users[chat_id] = {
-            "username": f"User{chat_id}",
-            "first_name": f"User{chat_id}",
+    chat_id_str = str(chat_id)  # Всегда используем строки
+    if chat_id_str not in all_users:
+        all_users[chat_id_str] = {
+            "username": f"User{chat_id_str}",
+            "first_name": f"User{chat_id_str}",
             "last_name": ""
         }
         save_all_users()
@@ -88,23 +105,31 @@ def add_user_by_id(chat_id):
 def update_user_info(msg):
     """Обновить информацию о пользователе (если он уже есть в базе)"""
     global all_users
-    chat_id = msg.chat.id
+    chat_id = str(msg.chat.id)  # Всегда используем строки
     if chat_id in all_users:
         # Обновляем имя если пользователь изменил username или имя
-        new_username = msg.from_user.username or msg.from_user.full_name or "User"
-        new_first_name = msg.from_user.first_name or "User"
+        if msg.chat.type in ["group", "supergroup"]:
+            new_username = msg.from_user.username if msg.from_user else None
+            new_first_name = msg.chat.title or f"Chat{chat_id}"
+        else:
+            new_username = msg.from_user.username if msg.from_user else None
+            new_first_name = msg.from_user.first_name or "User"
+
         if all_users[chat_id].get("username") != new_username or all_users[chat_id].get("first_name") != new_first_name:
-            all_users[chat_id]["username"] = new_username
+            all_users[chat_id]["username"] = new_username or new_first_name
             all_users[chat_id]["first_name"] = new_first_name
-            all_users[chat_id]["last_name"] = msg.from_user.last_name or ""
+            all_users[chat_id]["last_name"] = ""
+            all_users[chat_id]["chat_type"] = msg.chat.type
+            all_users[chat_id]["chat_title"] = msg.chat.title if hasattr(msg.chat, 'title') else None
             save_all_users()
 
 def get_user_display_name(chat_id):
     """Получить отображаемое имя пользователя"""
-    if chat_id in all_users:
-        user = all_users[chat_id]
-        return user.get("username") or user.get("first_name") or f"User{chat_id}"
-    return f"User{chat_id}"
+    chat_id_str = str(chat_id)
+    if chat_id_str in all_users:
+        user = all_users[chat_id_str]
+        return user.get("first_name") or user.get("username") or f"User{chat_id_str}"
+    return f"User{chat_id_str}"
 
 def load_state():
     """Загрузить состояние из файла"""
@@ -113,20 +138,27 @@ def load_state():
             try:
                 loaded = json.load(f)
                 state.update(loaded)
+                # Нормализуем admins к строкам
+                state["admins"] = [str(a) for a in state.get("admins", [])]
+                # Нормализуем allowed_users к строкам
+                state["allowed_users"] = [str(u) for u in state.get("allowed_users", [])]
                 # Миграция: если есть admin_chat_id, переносим в admins
                 if "admin_chat_id" in loaded and loaded["admin_chat_id"]:
-                    if loaded["admin_chat_id"] not in state["admins"]:
-                        state["admins"].append(loaded["admin_chat_id"])
+                    admin_id = str(loaded["admin_chat_id"])
+                    if admin_id not in state["admins"]:
+                        state["admins"].append(admin_id)
                     del state["admin_chat_id"]
                     save_state()
                 # Миграция: если есть tg_chat_id, переносим в admins
                 if "tg_chat_id" in loaded and loaded["tg_chat_id"]:
-                    if loaded["tg_chat_id"] not in state["admins"]:
-                        state["admins"].append(loaded["tg_chat_id"])
-                    if loaded["tg_chat_id"] not in state["allowed_users"]:
-                        state["allowed_users"].append(loaded["tg_chat_id"])
+                    tg_id = str(loaded["tg_chat_id"])
+                    if tg_id not in state["admins"]:
+                        state["admins"].append(tg_id)
+                    if tg_id not in state["allowed_users"]:
+                        state["allowed_users"].append(tg_id)
                     del state["tg_chat_id"]
                     save_state()
+                save_state()  # Сохраняем нормализованное состояние
             except Exception as e:
                 print(f"⚠️ Ошибка загрузки state: {e}")
 
@@ -134,7 +166,7 @@ load_state()
 
 def is_admin(chat_id):
     """Проверка, является ли пользователь админом"""
-    return chat_id in state.get("admins", [])
+    return str(chat_id) in state.get("admins", [])
 
 def is_allowed(chat_id):
     """Проверка, разрешён ли пользователь — теперь все разрешены"""
@@ -143,43 +175,74 @@ def is_allowed(chat_id):
 def add_admin(chat_id):
     """Добавить админа"""
     global state
-    if chat_id not in state["admins"]:
-        state["admins"].append(chat_id)
+    chat_id_str = str(chat_id)
+    if chat_id_str not in state["admins"]:
+        state["admins"].append(chat_id_str)
         save_state()
 
 def remove_admin(chat_id):
     """Удалить админа"""
     global state
-    if chat_id in state["admins"]:
-        state["admins"].remove(chat_id)
+    chat_id_str = str(chat_id)
+    if chat_id_str in state["admins"]:
+        state["admins"].remove(chat_id_str)
         save_state()
 
 def add_allowed_user(chat_id):
     """Добавить пользователя в список (для статистики)"""
     global state
-    if chat_id not in state["allowed_users"]:
-        state["allowed_users"].append(chat_id)
+    chat_id_str = str(chat_id)
+    if chat_id_str not in state["allowed_users"]:
+        state["allowed_users"].append(chat_id_str)
         save_state()
 
 def remove_allowed_user(chat_id):
     """Удалить пользователя из списка (для статистики)"""
     global state
-    if chat_id in state["allowed_users"]:
-        state["allowed_users"].remove(chat_id)
+    chat_id_str = str(chat_id)
+    if chat_id_str in state["allowed_users"]:
+        state["allowed_users"].remove(chat_id_str)
         save_state()
 
 async def send_to_all_users(text, **kwargs):
-    """Отправить сообщение всем пользователям"""
-    all_chats = list(set(all_users))  # Используем всех пользователей
+    """Отправить сообщение всем пользователям с учётом dc_to_tg_target"""
+    all_chats = get_target_chats()
     sent_messages = []
-    for chat_id in all_chats:
-        if chat_id:
-            try:
-                msg = await bot.send_message(chat_id, text, **kwargs)
-                sent_messages.append((chat_id, msg.message_id))
-            except Exception as e:
-                print(f"⚠️ Не удалось отправить в {chat_id}: {e}")
+    
+    for chat_id_str in all_chats:
+        try:
+            msg = await bot.send_message(int(chat_id_str), text, **kwargs)
+            sent_messages.append((chat_id_str, msg.message_id))
+        except Exception as e:
+            print(f"Error sending to {chat_id_str}: {e}")
+    
     return sent_messages
+
+def get_target_chats():
+    """Получить список чатов для отправки с учётом dc_to_tg_target"""
+    all_chats = list(all_users.keys())
+    dc_target = state.get("dc_to_tg_target", "all")
+    result = []
+    
+    for chat_id_str in all_chats:
+        if not chat_id_str:
+            continue
+        
+        # Определяем тип чата
+        user_data = all_users.get(chat_id_str, {})
+        chat_type = user_data.get("chat_type", "private")
+        is_group = chat_type in ["group", "supergroup"]
+        
+        # Фильтруем по настройке dc_to_tg_target
+        if dc_target == "bot" and is_group:
+            continue  # Пропускаем группы, отправляем только в ЛС
+        elif dc_target == "group" and not is_group:
+            continue  # Пропускаем ЛС, отправляем только в группы
+        # если "all" - отправляем везде
+        
+        result.append(chat_id_str)
+    
+    return result
 
 # ───────── TELEGRAM ─────────
 bot = Bot(TG_TOKEN)
@@ -189,13 +252,16 @@ dp.include_router(router)
 
 def main_kb():
     dnd_status = "💤 DND: ON" if state.get("dnd") else "🔔 DND: OFF"
-    bridge_status = "🟢 ВКЛ" if state.get("enabled") else "🔴 ВЫКЛ"
+    bridge_status = "🟢 TG→DC: ВКЛ" if state.get("enabled") else "🔴 TG→DC: ВЫКЛ"
+    dc_target = state.get("dc_to_tg_target", "all")
+    dc_target_text = {"bot": "📨 DC→ЛС", "group": "📨 DC→Группа", "all": "📨 DC→Везде"}[dc_target]
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 ON", callback_data="on"),
-            InlineKeyboardButton(text="🔴 OFF", callback_data="off")
+            InlineKeyboardButton(text="🟢 TG→DC: ВКЛ", callback_data="on"),
+            InlineKeyboardButton(text="🔴 TG→DC: ВЫКЛ", callback_data="off")
         ],
         [InlineKeyboardButton(text=dnd_status, callback_data="toggle_dnd")],
+        [InlineKeyboardButton(text=dc_target_text, callback_data="toggle_dc_target")],
         [
             InlineKeyboardButton(text="🔁 Канал", callback_data="set_channel"),
             InlineKeyboardButton(text="📡 Статус", callback_data="status")
@@ -215,6 +281,9 @@ async def start(msg: Message):
         add_admin(msg.chat.id)
         add_allowed_user(msg.chat.id)
 
+    # Определяем тип чата
+    chat_type = "ЛС" if msg.chat.type == "private" else "Группа" if msg.chat.type in ["group", "supergroup"] else msg.chat.type
+
     # Сброс состояния для админа
     if is_admin(msg.chat.id):
         state["enabled"] = True
@@ -228,7 +297,8 @@ async def start(msg: Message):
             f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
             f"👑 Админов: {len(state.get('admins', []))}\n"
             f"👥 Пользователей: {len(all_users)}\n"
-            f"📡 Канал: `{state['discord_channel_id']}`",
+            f"📡 Канал: `{state['discord_channel_id']}`\n"
+            f"💬 Чат: {chat_type}",
             reply_markup=main_kb(),
             parse_mode="Markdown"
         )
@@ -238,7 +308,8 @@ async def start(msg: Message):
             f"🚀 **Мост TG ↔ DC**\n\n"
             f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
             f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
-            f"👥 Пользователей: {len(all_users)}",
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"💬 Чат: {chat_type}",
             reply_markup=main_kb(),
             parse_mode="Markdown"
         )
@@ -262,6 +333,36 @@ async def toggle_dnd(call: CallbackQuery):
         pass
     await call.answer(f"DND: {'ВКЛ' if state['dnd'] else 'ВЫКЛ'}")
 
+@router.callback_query(F.data == "toggle_dc_target")
+async def toggle_dc_target(call: CallbackQuery):
+    # Переключаем между bot -> group -> all -> bot
+    current = state.get("dc_to_tg_target", "all")
+    if current == "all":
+        state["dc_to_tg_target"] = "bot"
+    elif current == "bot":
+        state["dc_to_tg_target"] = "group"
+    else:
+        state["dc_to_tg_target"] = "all"
+    save_state()
+    
+    dc_target_text = {"bot": "📨 DC→ЛС", "group": "📨 DC→Группа", "all": "📨 DC→Везде"}[state["dc_to_tg_target"]]
+    
+    try:
+        await call.message.edit_text(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 TG→DC: ВКЛ' if state['enabled'] else '🔴 TG→DC: ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"📨 DC→: {dc_target_text}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{state['discord_channel_id']}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+    await call.answer(f"DC→: {dc_target_text}")
+
 @router.callback_query(F.data.in_(["on", "off"]))
 async def toggle(call: CallbackQuery):
     state["enabled"] = (call.data == "on")
@@ -283,9 +384,12 @@ async def toggle(call: CallbackQuery):
 
 @router.callback_query(F.data == "status")
 async def status_check(call: CallbackQuery):
+    dc_target = state.get("dc_to_tg_target", "all")
+    dc_target_text = {"bot": "ЛС", "group": "Группа", "all": "Везде"}[dc_target]
     await call.answer(
-        f"🟢 Онлайн" if state["enabled"] else "🔴 Оффлайн\n\n"
-        f"DND: {state.get('dnd')}\n"
+        f"{'🟢 TG→DC: ВКЛ' if state['enabled'] else '🔴 TG→DC: ВЫКЛ'}\n\n"
+        f"DND: {'ВКЛ' if state.get('dnd') else 'ВЫКЛ'}\n"
+        f"DC→: {dc_target_text}\n"
         f"Канал: {state['discord_channel_id']}\n"
         f"Админов: {len(state.get('admins', []))}\n"
         f"Пользователей: {len(all_users)}",
@@ -399,16 +503,15 @@ async def users_menu(call: CallbackQuery):
     for uid in state.get("admins", []):
         name = get_user_display_name(uid)
         admins_list.append(f"👑 {uid} — {name}")
-    
+
     # Список пользователей с именами (кроме админов)
-    admin_ids = state.get("admins", [])
+    admin_ids = set(state.get("admins", []))  # Используем set для быстрого поиска
     users_items = []
     for uid in all_users.keys():
-        uid_int = int(uid)
-        if uid_int not in admin_ids:
+        if uid not in admin_ids:  # uid уже строка
             name = get_user_display_name(uid)
             users_items.append(f"• {uid} — {name}")
-    
+
     users_count = len(all_users) - len(admin_ids)
 
     try:
@@ -438,7 +541,7 @@ async def users_refresh(call: CallbackQuery):
         admin_id_str = str(admin_id)
         if admin_id_str in all_users:
             try:
-                user = await bot.get_chat(admin_id)
+                user = await bot.get_chat(int(admin_id_str))
                 new_username = user.username or user.full_name or "User"
                 new_first_name = user.first_name or "User"
                 if all_users[admin_id_str].get("username") != new_username:
@@ -454,16 +557,15 @@ async def users_refresh(call: CallbackQuery):
     for uid in state.get("admins", []):
         name = get_user_display_name(uid)
         admins_list.append(f"👑 {uid} — {name}")
-    
+
     # Список пользователей с именами (кроме админов)
-    admin_ids = state.get("admins", [])
+    admin_ids = set(state.get("admins", []))  # Используем set для быстрого поиска
     users_items = []
     for uid in all_users.keys():
-        uid_int = int(uid)
-        if uid_int not in admin_ids:
+        if uid not in admin_ids:  # uid уже строка
             name = get_user_display_name(uid)
             users_items.append(f"• {uid} — {name}")
-    
+
     users_count = len(all_users) - len(admin_ids)
 
     try:
@@ -502,26 +604,27 @@ async def go_back(call: CallbackQuery):
 async def remove_admin_or_user(msg: Message):
     if not is_admin(msg.chat.id):
         return
-    user_id = int(msg.text)
-    if user_id in state["admins"]:
-        remove_admin(user_id)
-        remove_allowed_user(user_id)
-        await msg.answer(f"❌ Админ {user_id} удалён")
-    elif user_id in state.get("allowed_users", []):
-        remove_allowed_user(user_id)
-        await msg.answer(f"❌ Пользователь {user_id} удалён")
+    user_id_str = str(int(msg.text))  # Нормализуем ID к строке
+    user_id_display = user_id_str  # Для отображения
+    if user_id_str in state["admins"]:
+        remove_admin(user_id_str)
+        remove_allowed_user(user_id_str)
+        await msg.answer(f"❌ Админ {user_id_display} удалён")
+    elif user_id_str in state.get("allowed_users", []):
+        remove_allowed_user(user_id_str)
+        await msg.answer(f"❌ Пользователь {user_id_display} удалён")
     else:
-        await msg.answer(f"⚠️ {user_id} не найден в списке")
+        await msg.answer(f"⚠️ {user_id_display} не найден в списке")
 
 @router.message(F.text.regexp(r"^\+\d+$"))
 async def add_admin_cmd(msg: Message):
     if not is_admin(msg.chat.id):
         return
-    user_id = int(msg.text.replace("+", ""))
-    add_admin(user_id)
-    add_allowed_user(user_id)
-    add_user_by_id(user_id)  # Добавляем в all_users с временным именем
-    await msg.answer(f"✅ Админ `{user_id}` добавлен", parse_mode="Markdown")
+    user_id_str = str(int(msg.text.replace("+", "")))  # Нормализуем ID к строке
+    add_admin(user_id_str)
+    add_allowed_user(user_id_str)
+    add_user_by_id(user_id_str)  # Добавляем в all_users с временным именем
+    await msg.answer(f"✅ Админ `{user_id_str}` добавлен", parse_mode="Markdown")
 
 @router.message(F.text.regexp(r"^\d{8,15}$"))
 async def add_user(msg: Message):
@@ -531,10 +634,10 @@ async def add_user(msg: Message):
     text = msg.text.strip()
     if len(text) >= 17:  # Это ID канала
         return
-    user_id = int(text)
-    add_allowed_user(user_id)
-    add_user_by_id(user_id)  # Добавляем в all_users с временным именем
-    await msg.answer(f"✅ Пользователь `{user_id}` добавлен", parse_mode="Markdown")
+    user_id_str = str(int(text))  # Нормализуем ID к строке
+    add_allowed_user(user_id_str)
+    add_user_by_id(user_id_str)  # Добавляем в all_users с временным именем
+    await msg.answer(f"✅ Пользователь `{user_id_str}` добавлен", parse_mode="Markdown")
 
 # ───────── WEBHOOK ─────────
 async def get_webhook(channel):
@@ -569,9 +672,20 @@ async def tg_to_dc(msg: Message):
     path = None
     file_to_send = None
 
-    # Формируем заголовок с именем отправителя
-    sender_name = msg.from_user.full_name or "Unknown"
-    tg_header = f"<b>[TG | {sender_name}]</b>"
+    # Определяем тип чата и имя отправителя
+    is_group = msg.chat.type in ["group", "supergroup"]
+    
+    # Для групп показываем название группы и имя отправителя
+    if is_group:
+        chat_title = msg.chat.title or f"Chat{msg.chat.id}"
+        sender_name = msg.from_user.full_name if msg.from_user else "Unknown"
+        # Если это от имени канала/группы (анонимный админ)
+        if msg.sender_chat:
+            sender_name = msg.sender_chat.title or "Anonymous"
+        tg_header = f"<b>[TG | {chat_title} | {sender_name}]</b>"
+    else:
+        sender_name = msg.from_user.full_name or "Unknown" if msg.from_user else "Unknown"
+        tg_header = f"<b>[TG | {sender_name}]</b>"
 
     # Получаем контент
     content = (msg.text or msg.caption or "").strip()[:2000]
@@ -581,8 +695,8 @@ async def tg_to_dc(msg: Message):
         content_with_header = tg_header
 
     # Отправляем сообщение всем пользователям Telegram (кроме отправителя)
-    all_chats = list(set(all_users.keys()))
-    sender_chat_id = msg.chat.id
+    all_chats = get_target_chats()
+    sender_chat_id = str(msg.chat.id)  # Преобразуем к строке
     print(f"TG->TG: {len(all_chats)} чатов, отправитель: {sender_chat_id}, чаты: {all_chats}")
     sent_tg_messages = {}  # chat_id -> message_id
     first_tg_msg_id = None  # ID первого отправленного сообщения для ответов
@@ -604,15 +718,14 @@ async def tg_to_dc(msg: Message):
             reply_to_msg_id = orig_msg_id
 
     for chat_id_str in all_chats:
-        chat_id = int(chat_id_str)  # Преобразуем в int
-        if chat_id == sender_chat_id:
-            print(f"  Пропускаем отправителя {chat_id}")
+        if chat_id_str == sender_chat_id:
+            print(f"  Пропускаем отправителя {sender_chat_id}")
             continue  # Не отправляем самому себе
         try:
             if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
                 # Только текст
                 sent = await bot.send_message(
-                    chat_id,
+                    int(chat_id_str),
                     content_with_header,
                     reply_to_message_id=int(reply_to_msg_id) if reply_to_msg_id else None,
                     parse_mode="HTML"
@@ -636,13 +749,29 @@ async def tg_to_dc(msg: Message):
             if not channel:
                 return
 
-            # Аватар пользователя
+            # Аватар пользователя (для групп - фото профиля пользователя, для каналов - фото канала)
             avatar_url = None
             try:
-                ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
-                if ups.total_count > 0:
-                    img = await bot.get_file(ups.photos[0][-1].file_id)
-                    avatar_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+                if is_group:
+                    # Для групп - аватар пользователя
+                    if msg.from_user:
+                        ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
+                        if ups.total_count > 0:
+                            img = await bot.get_file(ups.photos[0][-1].file_id)
+                            avatar_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+                    elif msg.sender_chat and msg.sender_chat.photo:
+                        # Аватар канала/группы
+                        photo = msg.sender_chat.photo
+                        if photo.big_file_id:
+                            img = await bot.get_file(photo.big_file_id)
+                            avatar_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+                else:
+                    # Для ЛС - аватар пользователя
+                    if msg.from_user:
+                        ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
+                        if ups.total_count > 0:
+                            img = await bot.get_file(ups.photos[0][-1].file_id)
+                            avatar_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
             except:
                 pass
 
@@ -708,10 +837,11 @@ async def tg_to_dc(msg: Message):
         # СНАЧАЛА: Отправляем медиа всем пользователям Telegram (кроме отправителя)
         # Чтобы получить first_tg_msg_id для reply_map
         first_tg_msg_id = None
-        all_chats = list(set(all_users))
-        
-        for chat_id in all_chats:
-            if chat_id == msg.chat.id:
+        all_chats = get_target_chats()
+        sender_chat_id = str(msg.chat.id)
+
+        for chat_id_str in all_chats:
+            if chat_id_str == sender_chat_id:
                 continue
             try:
                 sent_media_msg_id = None
@@ -730,7 +860,7 @@ async def tg_to_dc(msg: Message):
                     path = os.path.join(TMP_DIR, f"st_copy_{sticker.file_id}.{ext}")
                     await bot.download_file(file_info.file_path, path)
                     sent = await bot.send_document(
-                        chat_id,
+                        int(chat_id_str),
                         FSInputFile(path),
                         caption=f"{tg_header}\nСтикер" if not content else f"{tg_header}\n{content}",
                         parse_mode="HTML"
@@ -847,7 +977,7 @@ async def tg_to_dc(msg: Message):
                     discord_poll.add_answer(text=opt.text[:55])
 
                 payload = {
-                    "username": (msg.from_user.full_name or "Unknown")[:32],
+                    "username": sender_name[:32],
                     "wait": True,
                     "content": results_text,
                     "poll": discord_poll
@@ -868,7 +998,7 @@ async def tg_to_dc(msg: Message):
                 print(traceback.format_exc())
                 # Фолбэк — только текст
                 payload = {
-                    "username": (msg.from_user.full_name or "Unknown")[:32],
+                    "username": sender_name[:32],
                     "wait": True,
                     "content": results_text
                 }
@@ -941,7 +1071,7 @@ async def tg_to_dc(msg: Message):
             dc_content = "…"
 
         payload = {
-            "username": (msg.from_user.full_name or "Unknown")[:32],
+            "username": sender_name[:32],
             "wait": True
         }
 
@@ -952,10 +1082,24 @@ async def tg_to_dc(msg: Message):
             payload["file"] = file_to_send
 
         try:
-            ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
-            if ups.total_count > 0:
-                img = await bot.get_file(ups.photos[0][-1].file_id)
-                payload["avatar_url"] = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+            # Аватар для медиа (аналогично тексту)
+            if is_group:
+                if msg.from_user:
+                    ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
+                    if ups.total_count > 0:
+                        img = await bot.get_file(ups.photos[0][-1].file_id)
+                        payload["avatar_url"] = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+                elif msg.sender_chat and msg.sender_chat.photo:
+                    photo = msg.sender_chat.photo
+                    if photo.big_file_id:
+                        img = await bot.get_file(photo.big_file_id)
+                        payload["avatar_url"] = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
+            else:
+                if msg.from_user:
+                    ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
+                    if ups.total_count > 0:
+                        img = await bot.get_file(ups.photos[0][-1].file_id)
+                        payload["avatar_url"] = f"https://api.telegram.org/file/bot{TG_TOKEN}/{img.file_path}"
         except:
             pass
 
@@ -998,7 +1142,18 @@ async def tg_edited_to_dc(msg: Message):
         if not webhook:
             return
 
-        new_content = (msg.text or msg.caption or "").strip()[:2000] or "…"
+        # Обработка редактирования опроса
+        if msg.poll:
+            poll = msg.poll
+            poll_options = "\n".join([f"▫️ {opt.text} — {opt.voter_count}" for opt in poll.options])
+            poll_type = "📊 Анонимный" if poll.is_anonymous else "📢 Открытый"
+            poll_status = "✅ Завершено" if poll.is_closed else "🔓 Активно"
+
+            new_content = f"{poll_type} опрос: {poll.question}\n\n{poll_options}\n{poll_status}"
+            if msg.caption:
+                new_content = f"{msg.caption.strip()}\n\n{new_content}"
+        else:
+            new_content = (msg.text or msg.caption or "").strip()[:2000] or "…"
 
         await webhook.edit_message(
             message_id=int(dc_msg_id_str),
@@ -1013,50 +1168,6 @@ async def tg_edited_to_dc(msg: Message):
         save_state()
     except Exception as e:
         print(f"❌ Edit TG→DC: {type(e).__name__}: {e}")
-
-# ───────── TG → DC: обновление опроса ─────────
-@router.edited_message()
-async def tg_poll_edited_to_dc(msg: Message):
-    """Обновление голосования в Telegram → обновление в Discord"""
-    if not state["enabled"]:
-        return
-    
-    if not msg.poll:
-        return  # Это не опрос
-    
-    dc_msg_id = state["reply_map"].get(str(msg.message_id))
-    if not dc_msg_id:
-        return
-    
-    try:
-        guild = dc.get_guild(GUILD_ID)
-        channel = guild.get_channel(state["discord_channel_id"])
-        if not channel:
-            return
-        
-        webhook = await get_webhook(channel)
-        if not webhook:
-            return
-        
-        poll = msg.poll
-        poll_options = "\n".join([f"▫️ {opt.text} — {opt.voter_count}" for opt in poll.options])
-        poll_type = "📊 Анонимный" if poll.is_anonymous else "📢 Открытый"
-        poll_status = "✅ Завершено" if poll.is_closed else "🔓 Активно"
-        
-        new_content = f"{poll_type} опрос: {poll.question}\n\n{poll_options}\n{poll_status}"
-        if msg.caption:
-            new_content = f"{msg.caption.strip()}\n\n{new_content}"
-        
-        await webhook.edit_message(
-            message_id=int(dc_msg_id),
-            content=new_content
-        )
-        print(f"✅ Poll edited TG→DC ok: {msg.message_id} → {dc_msg_id}")
-        
-    except discord.NotFound:
-        print(f"Poll edited TG→DC: уже удалено в DC {dc_msg_id}")
-    except Exception as e:
-        print(f"❌ Poll edited TG→DC: {type(e).__name__}: {e}")
 
 # ───────── DISCORD ─────────
 intents = discord.Intents.all()
@@ -1107,12 +1218,12 @@ async def on_message(message: discord.Message):
 
                 caption = f"{header}\n{content}" if att == message.attachments[0] and content else f"{header}\n{att.filename}"
                 # Отправляем всем пользователям
-                all_chats = list(set(all_users))
+                all_chats = get_target_chats()
                 first_tg_msg_id = None
-                for chat_id in all_chats:
+                for chat_id_str in all_chats:
                     try:
                         sent = await bot.send_document(
-                            chat_id,
+                            int(chat_id_str),
                             FSInputFile(path),
                             caption=caption,
                             reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
@@ -1123,7 +1234,7 @@ async def on_message(message: discord.Message):
                         if first_tg_msg_id is None:
                             first_tg_msg_id = sent.message_id
                     except Exception as e:
-                        print(f"⚠️ Не удалось отправить файл в {chat_id}: {e}")
+                        print(f"⚠️ Не удалось отправить файл в {chat_id_str}: {e}")
                 # Сохраняем первый TG message_id для ответов из DC
                 if first_tg_msg_id:
                     state["reply_map"][f"tg_{message.id}"] = str(first_tg_msg_id)
@@ -1147,13 +1258,13 @@ async def on_message(message: discord.Message):
                                     caption = f"{header}\n{content}"
 
                                 # Отправляем всем как фото/анимацию
-                                all_chats = list(set(all_users))
+                                all_chats = get_target_chats()
                                 first_tg_msg_id = None
-                                for chat_id in all_chats:
+                                for chat_id_str in all_chats:
                                     try:
                                         if ext == "gif":
                                             sent = await bot.send_animation(
-                                                chat_id,
+                                                int(chat_id_str),
                                                 animation=FSInputFile(path),
                                                 caption=caption,
                                                 reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
@@ -1161,7 +1272,7 @@ async def on_message(message: discord.Message):
                                             )
                                         else:
                                             sent = await bot.send_photo(
-                                                chat_id,
+                                                int(chat_id_str),
                                                 photo=FSInputFile(path),
                                                 caption=caption,
                                                 reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
@@ -1172,7 +1283,7 @@ async def on_message(message: discord.Message):
                                         if first_tg_msg_id is None:
                                             first_tg_msg_id = sent.message_id
                                     except Exception as e:
-                                        print(f"⚠️ Не удалось отправить в {chat_id}: {e}")
+                                        print(f"⚠️ Не удалось отправить в {chat_id_str}: {e}")
                                 saved_files.append(path)
                                 # Сохраняем первый TG message_id для ответов из DC
                                 if first_tg_msg_id:
@@ -1183,12 +1294,12 @@ async def on_message(message: discord.Message):
 
                 # Для Lottie или если не удалось скачать — отправляем ссылкой
                 sticker_type = "Lottie" if sticker.format == discord.StickerFormatType.lottie else "Стикер"
-                all_chats = list(set(all_users))
+                all_chats = get_target_chats()
                 first_tg_msg_id = None
-                for chat_id in all_chats:
+                for chat_id_str in all_chats:
                     try:
                         sent = await bot.send_message(
-                            chat_id,
+                            int(chat_id_str),
                             f"{header}\n{sticker_type}: {sticker_url}",
                             reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
                             parse_mode="HTML"
@@ -1198,7 +1309,7 @@ async def on_message(message: discord.Message):
                         if first_tg_msg_id is None:
                             first_tg_msg_id = sent.message_id
                     except Exception as e:
-                        print(f"⚠️ Не удалось отправить в {chat_id}: {e}")
+                        print(f"Error sending to {chat_id_str}: {e}")
                 # Сохраняем первый TG message_id для ответов из DC
                 if first_tg_msg_id:
                     state["reply_map"][f"tg_{message.id}"] = str(first_tg_msg_id)
@@ -1250,7 +1361,7 @@ async def on_message(message: discord.Message):
 
 @dc.event
 async def on_message_edit(before, after):
-    if after.author.bot or after.webhook_id:
+    if after.author.bot or after.webhook:
         return
     if not state["enabled"] or state.get("dnd"):
         return
@@ -1266,11 +1377,11 @@ async def on_message_edit(before, after):
         new_content = after.clean_content.strip() or "…"
 
         # Редактируем у всех пользователей
-        all_chats = list(set(all_users))
-        for chat_id in all_chats:
+        all_chats = get_target_chats()
+        for chat_id_str in all_chats:
             try:
                 await bot.edit_message_text(
-                    chat_id=chat_id,
+                    chat_id=int(chat_id_str),
                     message_id=int(tg_msg_id_str),
                     text=f"{header}\n{new_content}",
                     parse_mode="HTML"
@@ -1284,7 +1395,7 @@ async def on_message_edit(before, after):
 
 @dc.event
 async def on_message_delete(message):
-    if message.author.bot or message.webhook_id:
+    if message.author.bot or message.webhook:
         return
     if not state["enabled"] or state.get("dnd"):
         return
@@ -1297,11 +1408,11 @@ async def on_message_delete(message):
 
     try:
         # Удаляем у всех пользователей
-        all_chats = list(set(all_users))
-        for chat_id in all_chats:
+        all_chats = get_target_chats()
+        for chat_id_str in all_chats:
             try:
                 await bot.delete_message(
-                    chat_id=chat_id,
+                    chat_id=int(chat_id_str),
                     message_id=int(tg_msg_id_str)
                 )
             except:
@@ -1324,15 +1435,15 @@ async def on_raw_poll_vote_add(payload):
     """Обновление голосования Discord → обновление текста в Telegram"""
     if not state["enabled"]:
         return
-    
+
     channel_id = int(payload.channel_id)
     if channel_id != state["discord_channel_id"]:
         return
-    
+
     tg_msg_id = state["reply_map"].get(str(payload.message_id))
     if not tg_msg_id:
         return
-    
+
     # Проверяем, не является ли это TG опросом (их нельзя редактировать)
     poll_key = f"poll_{tg_msg_id}"
     if state["reply_map"].get(poll_key) == "tg":
@@ -1340,7 +1451,7 @@ async def on_raw_poll_vote_add(payload):
         return
     
     try:
-        channel = dc.get_channel(channel_id)
+        channel = await dc.fetch_channel(channel_id)
         message = await channel.fetch_message(payload.message_id)
         
         if not message.poll:
@@ -1349,16 +1460,16 @@ async def on_raw_poll_vote_add(payload):
         poll = message.poll
         poll_options = "\n".join([f"{i+1}⃣ {opt.text} — {opt.vote_count}" for i, opt in enumerate(poll.answers)])
         poll_status = "✅ Завершено" if poll.is_finalized else "🔓 Активно"
-        poll_text = f"📊 Опрос: {poll.question}\n\n{poll_options}\n\n{poll_status}"
+        poll_text = f"������ Опрос: {poll.question}\n\n{poll_options}\n\n{poll_status}"
 
         author_name = message.author.display_name if hasattr(message, 'author') and message.author else "Unknown"
 
         # Редактируем у всех пользователей
-        all_chats = list(set(all_users))
-        for chat_id in all_chats:
+        all_chats = get_target_chats()
+        for chat_id_str in all_chats:
             try:
                 await bot.edit_message_text(
-                    chat_id=chat_id,
+                    chat_id=int(chat_id_str),
                     message_id=int(tg_msg_id),
                     text=f"<b>[DC | {author_name}]</b>\n{poll_text}",
                     parse_mode="HTML"
@@ -1374,7 +1485,7 @@ async def on_raw_poll_vote_remove(payload):
     """Удаление голоса Discord → обновление текста в Telegram"""
     await on_raw_poll_vote_add(payload)
 
-# ───────── RUN ─────────
+# ───────── RUN ─���───────
 async def main():
     shutil.rmtree(TMP_DIR, ignore_errors=True)
     os.makedirs(TMP_DIR, exist_ok=True)
