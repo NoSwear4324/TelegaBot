@@ -730,14 +730,14 @@ async def tg_to_dc(msg: Message):
                     reply_to_message_id=int(reply_to_msg_id) if reply_to_msg_id else None,
                     parse_mode="HTML"
                 )
-                sent_tg_messages[chat_id] = sent.message_id
+                sent_tg_messages[chat_id_str] = sent.message_id
                 if first_tg_msg_id is None:
                     first_tg_msg_id = sent.message_id
-                print(f"  Отправлено в {chat_id}: {sent.message_id}")
+                print(f"  Отправлено в {chat_id_str}: {sent.message_id}")
             else:
-                print(f"  Медиа, отправка позже в {chat_id}")
+                print(f"  Медиа, отправка позже в {chat_id_str}")
         except Exception as e:
-            print(f"  Не удалось отправить в TG {chat_id}: {e}")
+            print(f"  Не удалось отправить в TG {chat_id_str}: {e}")
 
     # Если это только текст — отправляем в Discord
     if not (msg.photo or msg.document or msg.video or msg.animation or msg.voice or msg.audio or msg.sticker or msg.video_note):
