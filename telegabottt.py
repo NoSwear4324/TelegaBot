@@ -142,6 +142,7 @@ dp.include_router(router)
 
 def main_kb():
     dnd_status = "💤 DND: ON" if state.get("dnd") else "🔔 DND: OFF"
+    bridge_status = "🟢 ВКЛ" if state.get("enabled") else "🔴 ВЫКЛ"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🟢 ON", callback_data="on"),
@@ -153,13 +154,13 @@ def main_kb():
             InlineKeyboardButton(text="📡 Статус", callback_data="status")
         ],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="users")]
-    ])
+    ], force_reply=True)
 
 @router.message(CommandStart())
 async def start(msg: Message):
     # Добавляем пользователя в список всех пользователей
     add_user_to_all(msg.chat.id)
-    
+
     # Первый пользователь становится админом
     if not state.get("admins"):
         add_admin(msg.chat.id)
@@ -172,17 +173,42 @@ async def start(msg: Message):
         state["discord_channel_id"] = DEFAULT_CHANNEL_ID
         state["reply_map"] = {}
         save_state()
-        await msg.answer(f"🚀 Мост TG ↔ DC запущен\nВы АДМИН\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(all_users)}", reply_markup=main_kb())
+        await msg.answer(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{state['discord_channel_id']}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
     else:
         # Все остальные пользователи имеют доступ
-        await msg.answer("🚀 Мост TG ↔ DC работает\nДоступ разрешён", reply_markup=main_kb())
+        await msg.answer(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👥 Пользователей: {len(all_users)}",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
 
 @router.callback_query(F.data == "toggle_dnd")
 async def toggle_dnd(call: CallbackQuery):
     state["dnd"] = not state.get("dnd", False)
     save_state()
     try:
-        await call.message.edit_reply_markup(reply_markup=main_kb())
+        await call.message.edit_text(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{state['discord_channel_id']}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
     except:
         pass
     await call.answer(f"DND: {'ВКЛ' if state['dnd'] else 'ВЫКЛ'}")
@@ -193,8 +219,14 @@ async def toggle(call: CallbackQuery):
     save_state()
     try:
         await call.message.edit_text(
-            f"Мост: {'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'}",
-            reply_markup=main_kb()
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{state['discord_channel_id']}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
         )
     except:
         pass
@@ -202,16 +234,102 @@ async def toggle(call: CallbackQuery):
 
 @router.callback_query(F.data == "status")
 async def status_check(call: CallbackQuery):
-    status = "🟢 Онлайн" if state["enabled"] else "🔴 Оффлайн"
     await call.answer(
-        f"{status}\nDND: {state.get('dnd')}\nКанал: {state['discord_channel_id']}\nАдминов: {len(state.get('admins', []))}\nПользователей: {len(all_users)}",
+        f"🟢 Онлайн" if state["enabled"] else "🔴 Оффлайн\n\n"
+        f"DND: {state.get('dnd')}\n"
+        f"Канал: {state['discord_channel_id']}\n"
+        f"Админов: {len(state.get('admins', []))}\n"
+        f"Пользователей: {len(all_users)}",
         show_alert=True
     )
 
 @router.callback_query(F.data == "set_channel")
 async def set_channel_req(call: CallbackQuery):
-    await call.message.answer("✏️ Отправь ID канала Discord")
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Только для админа", show_alert=True)
+        return
+
+    try:
+        guild = dc.get_guild(GUILD_ID)
+        if not guild:
+            await call.answer("❌ Сервер не найден", show_alert=True)
+            return
+
+        # Получаем все текстовые каналы
+        channels = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages]
+        channels.sort(key=lambda x: x.name)
+
+        kb = []
+        row = []
+        for ch in channels[:20]:  # Максимум 20 каналов
+            row.append(InlineKeyboardButton(text=f"#{ch.name}", callback_data=f"ch_{ch.id}"))
+            if len(row) == 1:  # По одному в ряд
+                kb.append(row)
+                row = []
+        if row:
+            kb.append(row)
+
+        kb.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="set_channel")])
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back")])
+
+        current_ch = state.get("discord_channel_id")
+        current_name = guild.get_channel(current_ch).name if guild.get_channel(current_ch) else "???"
+
+        try:
+            await call.message.edit_text(
+                f"📡 **Выберите канал Discord**\n\n"
+                f"Текущий: `#{current_name}` (`{current_ch}`)\n\n"
+                f"Доступно каналов: {len(channels)}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+    except Exception as e:
+        await call.answer(f"❌ Ошибка: {e}", show_alert=True)
     await call.answer()
+
+@router.callback_query(F.data.regexp(r"^ch_\d+$"))
+async def select_channel(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Только для админа", show_alert=True)
+        return
+
+    channel_id = int(call.data.replace("ch_", ""))
+    state["discord_channel_id"] = channel_id
+    save_state()
+
+    try:
+        guild = dc.get_guild(GUILD_ID)
+        channel = guild.get_channel(channel_id)
+        channel_name = channel.name if channel else "???"
+
+        await call.answer(f"✅ Канал: #{channel_name}", show_alert=False)
+        
+        # Обновляем меню с новым каналом
+        await call.message.edit_text(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{channel_id}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await call.answer(f"❌ Ошибка: {e}", show_alert=True)
+
+def users_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="users_refresh")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")]
+    ])
+
+def back_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")]
+    ])
 
 @router.callback_query(F.data == "users")
 async def users_menu(call: CallbackQuery):
@@ -222,17 +340,20 @@ async def users_menu(call: CallbackQuery):
     admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
     users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
 
-    await call.message.answer(
-        f"👥 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-        f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
-        f"➕ Добавить админа: +ID (например +123456)\n"
-        f"➖ Удалить админа: -ID (например -123456)\n"
-        f"➕ Добавить пользователя: ID\n"
-        f"➖ Удалить пользователя: -ID",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="users_refresh")]
-        ])
-    )
+    try:
+        await call.message.edit_text(
+            f"👥 **Управление пользователями**\n\n"
+            f"👑 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
+            f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
+            f"➕ Добавить админа: `+ID` (например +123456)\n"
+            f"➖ Удалить админа: `-ID` (например -123456)\n"
+            f"➕ Добавить пользователя: `ID`\n"
+            f"➖ Удалить пользователя: `-ID`",
+            reply_markup=users_kb(),
+            parse_mode="Markdown"
+        )
+    except:
+        pass
     await call.answer()
 
 @router.callback_query(F.data == "users_refresh")
@@ -240,31 +361,42 @@ async def users_refresh(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer()
         return
-    # Закрываем старое меню и открываем новое
-    await call.message.delete()
+    
     admins_list = "\n".join([f"👑 {u}" for u in state.get("admins", [])])
     users_list = "\n".join([f"• {u}" for u in all_users if u not in state.get("admins", [])])
 
-    await call.message.answer(
-        f"👥 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
-        f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
-        f"➕ Добавить админа: +ID (например +123456)\n"
-        f"➖ Удалить админа: -ID (например -123456)\n"
-        f"➕ Добавить пользователя: ID\n"
-        f"➖ Удалить пользователя: -ID",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="users_refresh")]
-        ])
-    )
+    try:
+        await call.message.edit_text(
+            f"👥 **Управление пользователями**\n\n"
+            f"👑 Админы ({len(state.get('admins', []))}):\n{admins_list}\n\n"
+            f"👤 Пользователи ({len(all_users) - len(state.get('admins', []))}):\n{users_list if users_list else '—'}\n\n"
+            f"➕ Добавить админа: `+ID` (например +123456)\n"
+            f"➖ Удалить админа: `-ID` (например -123456)\n"
+            f"➕ Добавить пользователя: `ID`\n"
+            f"➖ Удалить пользователя: `-ID`",
+            reply_markup=users_kb(),
+            parse_mode="Markdown"
+        )
+    except:
+        pass
     await call.answer()
 
-@router.message(F.text.regexp(r"^\d{17,20}$"))
-async def update_channel(msg: Message):
-    if not is_admin(msg.chat.id):
-        return
-    state["discord_channel_id"] = int(msg.text)
-    save_state()
-    await msg.answer(f"✅ Канал → {msg.text}")
+@router.callback_query(F.data == "back")
+async def go_back(call: CallbackQuery):
+    try:
+        await call.message.edit_text(
+            f"🚀 **Мост TG ↔ DC**\n\n"
+            f"{'🟢 ВКЛ' if state['enabled'] else '🔴 ВЫКЛ'} | "
+            f"{'💤 DND' if state.get('dnd') else '🔔 DND OFF'}\n\n"
+            f"👑 Админов: {len(state.get('admins', []))}\n"
+            f"👥 Пользователей: {len(all_users)}\n"
+            f"📡 Канал: `{state['discord_channel_id']}`",
+            reply_markup=main_kb(),
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+    await call.answer()
 
 @router.message(F.text.regexp(r"^-\d+$"))
 async def remove_admin_or_user(msg: Message):
@@ -347,6 +479,24 @@ async def tg_to_dc(msg: Message):
     # Отправляем сообщение всем пользователям Telegram (кроме отправителя)
     all_chats = list(set(all_users))
     sent_tg_messages = {}  # chat_id -> message_id
+    first_tg_msg_id = None  # ID первого отправленного сообщения для ответов
+
+    # Если это ответ на сообщение — находим ID для reply
+    reply_to_msg_id = None
+    if msg.reply_to_message:
+        # Ищем в reply_map ID сообщения Discord (для ссылки)
+        # и используем первый TG message_id для reply
+        orig_msg_id = str(msg.reply_to_message.message_id)
+        # Проверяем, есть ли связь с DC
+        dc_id = state["reply_map"].get(orig_msg_id)
+        if dc_id:
+            # Это сообщение из DC — ищем соответствующий TG message_id
+            # reply_map хранит: dc_id -> tg_msg_id (первый)
+            reply_to_msg_id = state["reply_map"].get(f"tg_{dc_id}")
+        if not reply_to_msg_id:
+            # Это сообщение из TG — используем как есть
+            reply_to_msg_id = orig_msg_id
+
     for chat_id in all_chats:
         if chat_id == msg.chat.id:
             continue  # Не отправляем самому себе
@@ -356,10 +506,12 @@ async def tg_to_dc(msg: Message):
                 sent = await bot.send_message(
                     chat_id,
                     content_with_header,
-                    reply_to_message_id=msg.reply_to_message.message_id if msg.reply_to_message else None,
+                    reply_to_message_id=int(reply_to_msg_id) if reply_to_msg_id else None,
                     parse_mode="HTML"
                 )
                 sent_tg_messages[chat_id] = sent.message_id
+                if first_tg_msg_id is None:
+                    first_tg_msg_id = sent.message_id
         except Exception as e:
             print(f"⚠️ Не удалось отправить в TG {chat_id}: {e}")
 
@@ -406,8 +558,12 @@ async def tg_to_dc(msg: Message):
                 payload["avatar_url"] = avatar_url
 
             sent = await webhook.send(**payload)
+            # Сохраняем связь: TG msg <-> DC msg
             state["reply_map"][str(msg.message_id)] = str(sent.id)
             state["reply_map"][str(sent.id)] = str(msg.message_id)
+            # Сохраняем первый TG message_id для ответов из DC
+            if first_tg_msg_id:
+                state["reply_map"][f"tg_{sent.id}"] = str(first_tg_msg_id)
             save_state()
             print(f"TG→DC ok: {msg.message_id} → {sent.id}")
         except Exception as e:
@@ -415,6 +571,7 @@ async def tg_to_dc(msg: Message):
         return
 
     # Если есть медиа — продолжаем стандартную обработку
+    # СНАЧАЛА отправляем всем TG, потом в Discord (чтобы сохранить reply_map правильно)
 
     try:
         guild = dc.get_guild(GUILD_ID)
@@ -422,10 +579,6 @@ async def tg_to_dc(msg: Message):
             return
         channel = guild.get_channel(state["discord_channel_id"])
         if not channel:
-            return
-
-        webhook = await get_webhook(channel)
-        if not webhook:
             return
 
         content = (msg.text or msg.caption or "").strip()[:2000]
@@ -440,6 +593,126 @@ async def tg_to_dc(msg: Message):
         is_photo = bool(msg.photo)
         is_document = bool(msg.document)
         is_poll = bool(msg.poll)  # голосование
+
+        # СНАЧАЛА: Отправляем медиа всем пользователям Telegram (кроме отправителя)
+        # Чтобы получить first_tg_msg_id для reply_map
+        first_tg_msg_id = None
+        all_chats = list(set(all_users))
+        
+        for chat_id in all_chats:
+            if chat_id == msg.chat.id:
+                continue
+            try:
+                sent_media_msg_id = None
+                # Стикеры — скачиваем и отправляем как файл
+                if is_sticker:
+                    sticker = msg.sticker
+                    file_info = await bot.get_file(sticker.file_id)
+                    if sticker.is_video:
+                        ext = "webm"
+                    elif sticker.is_animated:
+                        ext = "tgs"
+                    elif sticker.type == "gif":
+                        ext = "gif"
+                    else:
+                        ext = "webp"
+                    path = os.path.join(TMP_DIR, f"st_copy_{sticker.file_id}.{ext}")
+                    await bot.download_file(file_info.file_path, path)
+                    sent = await bot.send_document(
+                        chat_id,
+                        FSInputFile(path),
+                        caption=f"{tg_header}\nСтикер" if not content else f"{tg_header}\n{content}",
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                    if os.path.exists(path):
+                        os.remove(path)
+                # Кружочки (video note)
+                elif is_video_note:
+                    file_info = await bot.get_file(msg.video_note.file_id)
+                    path = os.path.join(TMP_DIR, f"vn_copy_{msg.video_note.file_id}.mp4")
+                    await bot.download_file(file_info.file_path, path)
+                    sent = await bot.send_video_note(
+                        chat_id,
+                        FSInputFile(path)
+                    )
+                    sent_media_msg_id = sent.message_id
+                    if os.path.exists(path):
+                        os.remove(path)
+                # Голосовые сообщения
+                elif is_voice:
+                    file_info = await bot.get_file(msg.voice.file_id)
+                    ext = msg.voice.mime_type.split('/')[-1] if msg.voice.mime_type else "ogg"
+                    path = os.path.join(TMP_DIR, f"vc_copy_{msg.voice.file_id}.{ext}")
+                    await bot.download_file(file_info.file_path, path)
+                    sent = await bot.send_voice(
+                        chat_id,
+                        FSInputFile(path),
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                    if os.path.exists(path):
+                        os.remove(path)
+                # Фото
+                elif is_photo:
+                    sent = await bot.send_photo(
+                        chat_id,
+                        photo=msg.photo[-1].file_id,
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                # Видео
+                elif is_video:
+                    sent = await bot.send_video(
+                        chat_id,
+                        video=msg.video.file_id,
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                # GIF (анимация)
+                elif is_animation:
+                    sent = await bot.send_animation(
+                        chat_id,
+                        animation=msg.animation.file_id,
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                # Аудио
+                elif is_audio:
+                    sent = await bot.send_audio(
+                        chat_id,
+                        audio=msg.audio.file_id,
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                # Документы
+                elif is_document:
+                    sent = await bot.send_document(
+                        chat_id,
+                        document=msg.document.file_id,
+                        caption=f"{tg_header}\n{content}" if content else tg_header,
+                        parse_mode="HTML"
+                    )
+                    sent_media_msg_id = sent.message_id
+                
+                if first_tg_msg_id is None and sent_media_msg_id:
+                    first_tg_msg_id = sent_media_msg_id
+            except Exception as e:
+                print(f"⚠️ Не удалось отправить медиа в TG {chat_id}: {e}")
+
+        # Теперь отправляем в Discord
+        webhook = await get_webhook(channel)
+        if not webhook:
+            return
+
+        # Определяем тип медиа для Discord
+        file_to_send = None
+        dc_content = content
 
         # Обработка голосования из Telegram → нативный опрос Discord + текст с результатами
         if is_poll:
@@ -472,7 +745,9 @@ async def tg_to_dc(msg: Message):
                 sent = await webhook.send(**payload)
                 state["reply_map"][str(msg.message_id)] = str(sent.id)
                 state["reply_map"][str(sent.id)] = str(msg.message_id)
-                state["reply_map"][f"poll_{msg.message_id}"] = "tg"  # Помечаем что это TG опрос
+                if first_tg_msg_id:
+                    state["reply_map"][f"tg_{sent.id}"] = str(first_tg_msg_id)
+                state["reply_map"][f"poll_{msg.message_id}"] = "tg"
                 save_state()
                 print(f"TG→DC poll ok: {msg.message_id} → {sent.id}")
                 return
@@ -489,43 +764,40 @@ async def tg_to_dc(msg: Message):
                 sent = await webhook.send(**payload)
                 state["reply_map"][str(msg.message_id)] = str(sent.id)
                 state["reply_map"][str(sent.id)] = str(msg.message_id)
-                state["reply_map"][f"poll_{msg.message_id}"] = "tg"  # Помечаем что это TG опрос
+                if first_tg_msg_id:
+                    state["reply_map"][f"tg_{sent.id}"] = str(first_tg_msg_id)
+                state["reply_map"][f"poll_{msg.message_id}"] = "tg"
                 save_state()
                 print(f"TG→DC poll (text) ok: {msg.message_id} → {sent.id}")
                 return
 
         if is_sticker:
-            # Обработка стикеров Telegram → Discord
             sticker = msg.sticker
             if sticker.file_size and sticker.file_size > MAX_FILE_SIZE:
-                content = "Стикер > 8 MB"
+                dc_content = "Стикер > 8 MB"
             else:
                 file_info = await bot.get_file(sticker.file_id)
-                # Определяем расширение по типу стикера
                 if sticker.is_video:
-                    ext = "webm"  # видео-стикеры
-                    content = "🎬 Видео-стикер"
+                    ext = "webm"
                 elif sticker.is_animated:
-                    ext = "tgs"  # анимированные (Lottie)
-                    content = "✨ Анимированный стикер (Lottie)"
+                    ext = "tgs"
                 elif sticker.type == "png":
                     ext = "png"
                 elif sticker.type == "gif":
                     ext = "gif"
                 else:
-                    ext = "webp"  # обычные стикеры
-                
+                    ext = "webp"
+
                 path = os.path.join(TMP_DIR, f"st_{sticker.file_id}.{ext}")
                 await bot.download_file(file_info.file_path, path)
                 file_to_send = File(path, filename=f"sticker.{ext}")
-                if not content or content.startswith("Стикер") or content.startswith("🎬") or content.startswith("✨"):
-                    content = None
+                if not dc_content or dc_content.startswith("Стикер"):
+                    dc_content = None
 
         elif is_video_note:
-            # Кружочки (video note)
             vn = msg.video_note
             if vn.file_size and vn.file_size > MAX_FILE_SIZE:
-                content = "Кружочек > 8 MB"
+                dc_content = "Кружочек > 8 MB"
             else:
                 file_info = await bot.get_file(vn.file_id)
                 path = os.path.join(TMP_DIR, f"vn_{vn.file_id}.mp4")
@@ -533,10 +805,9 @@ async def tg_to_dc(msg: Message):
                 file_to_send = File(path, filename="video_note.mp4")
 
         elif is_voice:
-            # Голосовые сообщения
             voice = msg.voice
             if voice.file_size and voice.file_size > MAX_FILE_SIZE:
-                content = "Голосовое > 8 MB"
+                dc_content = "Голосовое > 8 MB"
             else:
                 file_info = await bot.get_file(voice.file_id)
                 ext = voice.mime_type.split('/')[-1] if voice.mime_type else "ogg"
@@ -545,10 +816,9 @@ async def tg_to_dc(msg: Message):
                 file_to_send = File(path, filename=f"voice.{ext}")
 
         elif is_photo or is_document or is_video or is_animation or is_audio:
-            # Остальные медиа
             media = msg.photo[-1] if is_photo else (msg.document or msg.video or msg.animation or msg.audio)
             if media.file_size and media.file_size > MAX_FILE_SIZE:
-                content = "Файл > 8 MB"
+                dc_content = "Файл > 8 MB"
             else:
                 file_info = await bot.get_file(media.file_id)
                 ext = file_info.file_path.split('.')[-1] or "bin"
@@ -556,29 +826,20 @@ async def tg_to_dc(msg: Message):
                 await bot.download_file(file_info.file_path, path)
                 file_to_send = File(path)
 
-        # Если нет ни текста, ни медиа, ни стикера — минимальная заглушка
-        if not content and not file_to_send:
-            content = "…"
-
-        # Reply-ссылка (только если есть текст)
-        if content and msg.reply_to_message:
-            dc_reply_id = state["reply_map"].get(str(msg.reply_to_message.message_id))
-            if dc_reply_id:
-                link = f"https://discord.com/channels/{GUILD_ID}/{channel.id}/{dc_reply_id}"
-                content = f"⤴️ [В ответ]({link})\n{content}"
+        if not dc_content and not file_to_send:
+            dc_content = "…"
 
         payload = {
             "username": (msg.from_user.full_name or "Unknown")[:32],
             "wait": True
         }
 
-        if content is not None:
-            payload["content"] = content
+        if dc_content is not None:
+            payload["content"] = dc_content
 
         if file_to_send:
             payload["file"] = file_to_send
 
-        # Аватар пользователя
         try:
             ups = await bot.get_user_profile_photos(msg.from_user.id, limit=1)
             if ups.total_count > 0:
@@ -591,46 +852,11 @@ async def tg_to_dc(msg: Message):
 
         state["reply_map"][str(msg.message_id)] = str(sent.id)
         state["reply_map"][str(sent.id)] = str(msg.message_id)
+        if first_tg_msg_id:
+            state["reply_map"][f"tg_{sent.id}"] = str(first_tg_msg_id)
         save_state()
 
         print(f"TG→DC ok: {msg.message_id} → {sent.id} {'(стикер)' if is_sticker else ''}")
-
-        # Отправляем медиа всем пользователям Telegram (кроме отправителя)
-        for chat_id in all_chats:
-            if chat_id == msg.chat.id:
-                continue
-            try:
-                if file_to_send:
-                    sent_tg = await bot.send_document(
-                        chat_id,
-                        file_to_send,
-                        caption=f"{tg_header}\n{content}" if content else tg_header,
-                        reply_to_message_id=msg.reply_to_message.message_id if msg.reply_to_message else None,
-                        parse_mode="HTML"
-                    )
-                elif is_video_note:
-                    file_info = await bot.get_file(msg.video_note.file_id)
-                    path = os.path.join(TMP_DIR, f"vn_{msg.video_note.file_id}.mp4")
-                    await bot.download_file(file_info.file_path, path)
-                    sent_tg = await bot.send_video_note(
-                        chat_id,
-                        FSInputFile(path),
-                        reply_to_message_id=msg.reply_to_message.message_id if msg.reply_to_message else None
-                    )
-                elif is_voice:
-                    file_info = await bot.get_file(msg.voice.file_id)
-                    ext = msg.voice.mime_type.split('/')[-1] if msg.voice.mime_type else "ogg"
-                    path = os.path.join(TMP_DIR, f"vc_{msg.voice.file_id}.{ext}")
-                    await bot.download_file(file_info.file_path, path)
-                    sent_tg = await bot.send_voice(
-                        chat_id,
-                        FSInputFile(path),
-                        caption=f"{tg_header}\n{content}" if content else tg_header,
-                        reply_to_message_id=msg.reply_to_message.message_id if msg.reply_to_message else None,
-                        parse_mode="HTML"
-                    )
-            except Exception as e:
-                print(f"⚠️ Не удалось отправить медиа в TG {chat_id}: {e}")
 
     except Exception as e:
         print(f"❌ TG→DC: {type(e).__name__}: {e}")
@@ -743,7 +969,12 @@ async def on_message(message: discord.Message):
     try:
         tg_reply_id = None
         if message.reference and message.reference.message_id:
+            # Ищем TG message_id для ответа
+            # Сначала проверяем прямую связь (для сообщений из TG)
             tg_reply_id = state["reply_map"].get(str(message.reference.message_id))
+            # Если не нашли, проверяем tg_{dc_id} (для сообщений из DC)
+            if not tg_reply_id:
+                tg_reply_id = state["reply_map"].get(f"tg_{message.reference.message_id}")
 
         header = f"<b>[DC | {message.author.display_name}]</b>"
         content = message.clean_content.strip()
@@ -766,6 +997,7 @@ async def on_message(message: discord.Message):
                 caption = f"{header}\n{content}" if att == message.attachments[0] and content else f"{header}\n{att.filename}"
                 # Отправляем всем пользователям
                 all_chats = list(set(all_users))
+                first_tg_msg_id = None
                 for chat_id in all_chats:
                     try:
                         sent = await bot.send_document(
@@ -777,8 +1009,13 @@ async def on_message(message: discord.Message):
                         )
                         state["reply_map"][str(message.id)] = str(sent.message_id)
                         state["reply_map"][str(sent.message_id)] = str(message.id)
+                        if first_tg_msg_id is None:
+                            first_tg_msg_id = sent.message_id
                     except Exception as e:
                         print(f"⚠️ Не удалось отправить файл в {chat_id}: {e}")
+                # Сохраняем первый TG message_id для ответов из DC
+                if first_tg_msg_id:
+                    state["reply_map"][f"tg_{message.id}"] = str(first_tg_msg_id)
 
         elif message.stickers:
             for sticker in message.stickers:
@@ -798,29 +1035,45 @@ async def on_message(message: discord.Message):
                                 if content and sticker == message.stickers[0]:
                                     caption = f"{header}\n{content}"
 
-                                # Отправляем всем
+                                # Отправляем всем как фото/анимацию
                                 all_chats = list(set(all_users))
+                                first_tg_msg_id = None
                                 for chat_id in all_chats:
                                     try:
-                                        sent = await bot.send_document(
-                                            chat_id,
-                                            FSInputFile(path),
-                                            caption=caption,
-                                            reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
-                                            parse_mode="HTML"
-                                        )
+                                        if ext == "gif":
+                                            sent = await bot.send_animation(
+                                                chat_id,
+                                                animation=FSInputFile(path),
+                                                caption=caption,
+                                                reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
+                                                parse_mode="HTML"
+                                            )
+                                        else:
+                                            sent = await bot.send_photo(
+                                                chat_id,
+                                                photo=FSInputFile(path),
+                                                caption=caption,
+                                                reply_to_message_id=int(tg_reply_id) if tg_reply_id else None,
+                                                parse_mode="HTML"
+                                            )
                                         state["reply_map"][str(message.id)] = str(sent.message_id)
                                         state["reply_map"][str(sent.message_id)] = str(message.id)
+                                        if first_tg_msg_id is None:
+                                            first_tg_msg_id = sent.message_id
                                     except Exception as e:
                                         print(f"⚠️ Не удалось отправить в {chat_id}: {e}")
                                 saved_files.append(path)
+                                # Сохраняем первый TG message_id для ответов из DC
+                                if first_tg_msg_id:
+                                    state["reply_map"][f"tg_{message.id}"] = str(first_tg_msg_id)
                                 continue
                     except Exception as e:
                         print(f"⚠️ Не удалось скачать стикер DC: {e}")
 
-                # Для Lottie или если не удалось скачать — отправляем ссылку
+                # Для Lottie или если не удалось скачать — отправляем ссылкой
                 sticker_type = "Lottie" if sticker.format == discord.StickerFormatType.lottie else "Стикер"
                 all_chats = list(set(all_users))
+                first_tg_msg_id = None
                 for chat_id in all_chats:
                     try:
                         sent = await bot.send_message(
@@ -831,8 +1084,13 @@ async def on_message(message: discord.Message):
                         )
                         state["reply_map"][str(message.id)] = str(sent.message_id)
                         state["reply_map"][str(sent.message_id)] = str(message.id)
+                        if first_tg_msg_id is None:
+                            first_tg_msg_id = sent.message_id
                     except Exception as e:
                         print(f"⚠️ Не удалось отправить в {chat_id}: {e}")
+                # Сохраняем первый TG message_id для ответов из DC
+                if first_tg_msg_id:
+                    state["reply_map"][f"tg_{message.id}"] = str(first_tg_msg_id)
 
         elif message.poll:
             poll = message.poll
@@ -849,6 +1107,7 @@ async def on_message(message: discord.Message):
                 first_chat, first_msg_id = sent_list[0]
                 state["reply_map"][str(message.id)] = str(first_msg_id)
                 state["reply_map"][str(first_msg_id)] = str(message.id)
+                state["reply_map"][f"tg_{message.id}"] = str(first_msg_id)
                 state["reply_map"][f"poll_{first_msg_id}"] = "dc"
             save_state()
             print(f"DC→TG poll ok: {message.id} → {sent_list[0][1] if sent_list else 'N/A'}")
@@ -863,6 +1122,7 @@ async def on_message(message: discord.Message):
                 first_chat, first_msg_id = sent_list[0]
                 state["reply_map"][str(message.id)] = str(first_msg_id)
                 state["reply_map"][str(first_msg_id)] = str(message.id)
+                state["reply_map"][f"tg_{message.id}"] = str(first_msg_id)
 
         save_state()
         print(f"DC→TG ok: {message.id} → {state['reply_map'].get(str(message.id), '?')}")
